@@ -10,7 +10,6 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-// Final, robust parsing function
 function getPhoneNumberFromMessage(message) {
     const sipUri = message?.customer?.sipUri || message?.call?.customer?.number || message?.call?.customer?.sipUri;
     if (!sipUri) return null;
@@ -24,15 +23,12 @@ function getPhoneNumberFromMessage(message) {
 }
 
 app.post('/api/handler', async (req, res) => {
-    // --- FINAL FIX: Robustly find the message object from the POST body ---
-    let message = req.body;
-    if (req.body.message) {
-        message = req.body.message;
-    }
+    // Robustly find the message object
+    const message = req.body.message || req.body;
 
     if (!message || !message.type) {
-        console.warn("Received an invalid or empty message body.");
-        return res.status(200).send(); // Acknowledge the request but do nothing
+        console.warn("Received an invalid or empty message body, but acknowledging.", { body: req.body });
+        return res.status(200).send();
     }
 
     if (message.type === 'tool-call' && message.toolCall.name === 'databasecheck') {
@@ -66,7 +62,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.5 (Final Robust Parse) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v2.6 (Final Error Handling) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -75,7 +71,10 @@ app.post('/api/handler', async (req, res) => {
         }
 
         try {
-            const { summary, transcript } = message.analysis;
+            // FIX #3: Safely get summary and transcript from multiple possible locations
+            const summary = message?.analysis?.summary || message?.summary || 'No summary available.';
+            const transcript = message?.artifact?.transcript || message?.transcript || '';
+
             const analysis = await analyzeCallSummary(summary, transcript);
             const newCallRecord = {
               date: new Date().toISOString(),
@@ -106,7 +105,7 @@ app.post('/api/handler', async (req, res) => {
             } else {
                 const callerDoc = snapshot.docs[0];
                 const existingData = callerDoc.data();
-                const updatedHistory = [...existingData.callHistory, newCallRecord];
+                const updatedHistory = [...(existingData.callHistory || []), newCallRecord];
                 await callerDoc.ref.update({ callHistory: updatedHistory });
                 console.log(`Successfully updated record for ${callerPhoneNumber}.`);
             }
@@ -122,6 +121,7 @@ app.post('/api/handler', async (req, res) => {
 
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
+  // FIX #2: Using the most stable model name
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   const prompt = `
     Analyze the following phone call summary and transcript for "Justauto Solution Pvt. Ltd.".
@@ -158,6 +158,10 @@ async function analyzeCallSummary(summary, transcript) {
 }
 
 function extractCallerInfo(transcript) {
+    // FIX #3: Handle cases where the transcript might be empty or null
+    if (!transcript) {
+        return { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
+    }
     const info = { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
     const userTypeRegex = /(student|guardian|employee|garage owner|unemployed|other)/i;
     const userTypeMatch = transcript.match(userTypeRegex);
