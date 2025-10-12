@@ -3,9 +3,9 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const fetch = require('node-fetch');
 
-// Use express.text() to read the raw body regardless of content-type
+// --- FINAL FIX: Use express.text() to read the raw body, bypassing content-type issues ---
 const app = express();
-app.use(express.text({ type: '*/*' }));
+app.use(express.text({ type: '*/*' })); // This forces Express to read the body as a raw string
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
@@ -25,10 +25,11 @@ function getPhoneNumberFromMessage(message) {
 app.post('/api/handler', async (req, res) => {
     let parsedBody;
     try {
+        // Since we are using express.text(), req.body is now a string. We MUST parse it.
         if (typeof req.body === 'string' && req.body.length > 0) {
             parsedBody = JSON.parse(req.body);
         } else {
-             console.warn("Received empty or non-string body.");
+             console.warn("Received an empty request body. Skipping.");
              return res.status(200).send();
         }
     } catch (e) {
@@ -36,7 +37,7 @@ app.post('/api/handler', async (req, res) => {
         return res.status(400).send('Invalid JSON');
     }
     
-    // --- FINAL FIX: Find the message object, whether it's nested or not ---
+    // Find the message object, whether it's nested or not
     const message = parsedBody.message || parsedBody;
 
     if (!message || !message.type) {
@@ -75,7 +76,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.8 (Final Parser Fix) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v2.9 (Final Raw Body Parse) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
