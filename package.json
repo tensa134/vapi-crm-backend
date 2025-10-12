@@ -1,0 +1,14 @@
+{
+  "name": "vapi-crm-server",
+  "version": "1.0.0",
+  "description": "Backend server for Vapi to connect with a Firestore CRM.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "firebase-admin": "^11.11.0",
+    "node-fetch": "^2.7.0"
+  }
+}
