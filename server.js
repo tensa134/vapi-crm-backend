@@ -3,9 +3,9 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const fetch = require('node-fetch');
 
-// --- FINAL FIX: Use express.text() to read the raw body regardless of content-type ---
+// Use express.text() to read the raw body regardless of content-type
 const app = express();
-app.use(express.text({ type: '*/*' })); // Accept any content type as plain text
+app.use(express.text({ type: '*/*' }));
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
@@ -23,17 +23,24 @@ function getPhoneNumberFromMessage(message) {
 }
 
 app.post('/api/handler', async (req, res) => {
-    let message;
+    let parsedBody;
     try {
-        // Manually parse the raw body text into a JSON object
-        message = JSON.parse(req.body);
+        if (typeof req.body === 'string' && req.body.length > 0) {
+            parsedBody = JSON.parse(req.body);
+        } else {
+             console.warn("Received empty or non-string body.");
+             return res.status(200).send();
+        }
     } catch (e) {
         console.warn("Received a request with a non-JSON body. Body:", req.body);
         return res.status(400).send('Invalid JSON');
     }
+    
+    // --- FINAL FIX: Find the message object, whether it's nested or not ---
+    const message = parsedBody.message || parsedBody;
 
     if (!message || !message.type) {
-        console.warn("Received an invalid message structure after parsing.", { parsedBody: message });
+        console.warn("Could not find a valid message object with a 'type' property after parsing.", { parsedBody });
         return res.status(200).send();
     }
 
@@ -68,7 +75,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.7 (Final Raw Body Parse) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v2.8 (Final Parser Fix) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
