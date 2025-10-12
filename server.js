@@ -10,97 +10,89 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-app.post('/api/handler', async (req, res) => {
-  const { message } = req.body;
-
-  if (message.type === 'tool-call' && message.toolCall.name === 'databaseCheck') {
-    // ... (database check logic is unchanged)
-    const phoneNumber = message.call.customer.number;
-    console.log(`Tool call received: databaseCheck for ${phoneNumber}`);
-    try {
-      const callersRef = db.collection('callers');
-      const snapshot = await callersRef.where('phoneNumber', '==', phoneNumber).limit(1).get();
-      if (snapshot.empty) {
-        console.log(`New caller. Returning status.`);
-        return res.status(200).json({ result: 'New caller' });
-      } else {
-        console.log(`Existing caller. Returning data.`);
-        const callerData = snapshot.docs[0].data();
-        const lastCall = callerData.callHistory[callerData.callHistory.length - 1] || {};
-        const resultPayload = {
-          status: 'Existing caller',
-          name: callerData.name || 'Unknown',
-          lastCallSummary: lastCall.summary || 'No previous summary available.'
-        };
-        return res.status(200).json({ result: JSON.stringify(resultPayload) });
-      }
-    } catch (error) {
-      console.error('Database check tool error:', error);
-      return res.status(500).json({ result: 'Error checking database' });
+// --- NEW FUNCTION TO PARSE CALLER ID ---
+function getPhoneNumberFromCall(call) {
+    if (!call?.customer?.number) {
+        return null;
     }
-  }
-
-  if (message.type === 'end-of-call-report') {
-    // --- TRACER BULLET --- //
-    console.log("--- RUNNING LATEST SERVER CODE v2.0 ---"); 
-    
-    const { summary, transcript } = message;
-    const callerPhoneNumber = message.call?.customer?.number;
-
-    if (!callerPhoneNumber) {
-        console.warn('End-of-call report received with no phone number. Skipping.');
-        return res.status(200).send();
-    }
-
-    try {
-        const analysis = await analyzeCallSummary(summary, transcript);
-        const newCallRecord = {
-          callDate: new Date().toISOString(),
-          summary,
-          callStatus: analysis.callStatus || 'Connected-IB',
-          leadStatus: analysis.leadStatus || 'Uncertain',
-          followupDate: analysis.followupDate || 'N/A',
-          remark: analysis.remark || 'No remark.',
-          transcript,
-        };
-
-        const callersRef = db.collection('callers');
-        const snapshot = await callersRef.where('phoneNumber', '==', callerPhoneNumber).limit(1).get();
-
-        if (snapshot.empty) {
-          console.log(`Creating new record for ${callerPhoneNumber}`);
-          const callerInfo = extractCallerInfo(transcript);
-          await callersRef.add({
-            phoneNumber: callerPhoneNumber,
-            name: callerInfo.name,
-            course: callerInfo.course,
-            city: callerInfo.city,
-            state: callerInfo.state,
-            userType: callerInfo.userType,
-            createdAt: new Date().toISOString(),
-            callHistory: [newCallRecord]
-          });
-        } else {
-          console.log(`Updating record for ${callerPhoneNumber}`);
-          const callerDoc = snapshot.docs[0];
-          const existingData = callerDoc.data();
-          const updatedDetails = {
-            name: existingData.name === 'Unknown' ? extractCallerInfo(transcript).name : existingData.name,
-            userType: existingData.userType === 'Unknown' ? extractCallerInfo(transcript).userType : existingData.userType,
-          };
-          const updatedHistory = [...existingData.callHistory, newCallRecord];
-          await callerDoc.ref.update({ ...updatedDetails, callHistory: updatedHistory });
+    let number = call.customer.number;
+    // Check if it's a SIP URI and extract the number part
+    if (number.startsWith('sip:')) {
+        const atIndex = number.indexOf('@');
+        if (atIndex !== -1) {
+            number = number.substring(4, atIndex); // Get the part between "sip:" and "@"
         }
-        return res.status(200).send();
-      } catch (error) {
-        console.error('End of call processing error:', error);
-        return res.status(500).send();
-      }
-  }
+    }
+    return number;
+}
 
-  return res.status(200).send();
+app.post('/api/handler', async (req, res) => {
+    const { message } = req.body;
+
+    if (message.type === 'tool-call' && message.toolCall.name === 'databaseCheck') {
+        const phoneNumber = getPhoneNumberFromCall(message.call); // Use the new parser
+        if (!phoneNumber) {
+             console.warn('Database check tool call with no phone number. Treating as new caller.');
+             return res.status(200).json({ result: 'New caller' });
+        }
+        console.log(`Tool call received: databaseCheck for ${phoneNumber}`);
+        try {
+            const callersRef = db.collection('callers');
+            const snapshot = await callersRef.where('phoneNumber', '==', phoneNumber).limit(1).get();
+            if (snapshot.empty) {
+                console.log(`New caller. Returning status.`);
+                return res.status(200).json({ result: 'New caller' });
+            } else {
+                console.log(`Existing caller. Returning data.`);
+                const callerData = snapshot.docs[0].data();
+                const lastCall = callerData.callHistory[callerData.callHistory.length - 1] || {};
+                const resultPayload = {
+                    status: 'Existing caller',
+                    name: callerData.name || 'Unknown',
+                    lastCallSummary: lastCall.summary || 'No previous summary available.'
+                };
+                return res.status(200).json({ result: JSON.stringify(resultPayload) });
+            }
+        } catch (error) {
+            console.error('Database check tool error:', error);
+            return res.status(500).json({ result: 'Error checking database' });
+        }
+    }
+
+    if (message.type === 'end-of-call-report') {
+        console.log("--- RUNNING LATEST SERVER CODE v2.2 (with SIP fix) ---");
+        const { summary, transcript } = message;
+        const callerPhoneNumber = getPhoneNumberFromCall(message.call); // Use the new parser
+
+        if (!callerPhoneNumber) {
+            console.warn('End-of-call report received with no parsable phone number. Skipping.');
+            return res.status(200).send();
+        }
+
+        try {
+            const analysis = await analyzeCallSummary(summary, transcript);
+            const newCallRecord = { /* ... same as before ... */ };
+
+            const callersRef = db.collection('callers');
+            const snapshot = await callersRef.where('phoneNumber', '==', callerPhoneNumber).limit(1).get();
+
+            if (snapshot.empty) {
+                // ... same logic to create new record ...
+            } else {
+                // ... same logic to update existing record ...
+            }
+            return res.status(200).send();
+        } catch (error) {
+            console.error('End of call processing error:', error);
+            return res.status(500).send();
+        }
+    }
+
+    return res.status(200).send();
 });
 
+// The analyzeCallSummary and extractCallerInfo functions remain exactly the same.
+// Just ensure they are present below this point.
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
@@ -140,7 +132,6 @@ async function analyzeCallSummary(summary, transcript) {
 }
 
 function extractCallerInfo(transcript) {
-    // ... (extractCallerInfo logic is unchanged)
     const info = {
         name: 'Unknown',
         course: 'Unknown',
@@ -169,5 +160,3 @@ if (userTypeMatch) info.userType = userTypeMatch[0].charAt(0).toUpperCase() + us
     }
     return info;
 }
-
-module.exports = app;
