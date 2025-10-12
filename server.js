@@ -3,8 +3,9 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const fetch = require('node-fetch');
 
+// --- FINAL FIX: Use express.text() to read the raw body regardless of content-type ---
 const app = express();
-app.use(express.json());
+app.use(express.text({ type: '*/*' })); // Accept any content type as plain text
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
@@ -13,7 +14,6 @@ const db = getFirestore();
 function getPhoneNumberFromMessage(message) {
     const sipUri = message?.customer?.sipUri || message?.call?.customer?.number || message?.call?.customer?.sipUri;
     if (!sipUri) return null;
-
     let number = sipUri;
     if (number.startsWith('sip:')) {
         const atIndex = number.indexOf('@');
@@ -23,11 +23,17 @@ function getPhoneNumberFromMessage(message) {
 }
 
 app.post('/api/handler', async (req, res) => {
-    // Robustly find the message object
-    const message = req.body.message || req.body;
+    let message;
+    try {
+        // Manually parse the raw body text into a JSON object
+        message = JSON.parse(req.body);
+    } catch (e) {
+        console.warn("Received a request with a non-JSON body. Body:", req.body);
+        return res.status(400).send('Invalid JSON');
+    }
 
     if (!message || !message.type) {
-        console.warn("Received an invalid or empty message body, but acknowledging.", { body: req.body });
+        console.warn("Received an invalid message structure after parsing.", { parsedBody: message });
         return res.status(200).send();
     }
 
@@ -62,7 +68,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.6 (Final Error Handling) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v2.7 (Final Raw Body Parse) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -71,10 +77,8 @@ app.post('/api/handler', async (req, res) => {
         }
 
         try {
-            // FIX #3: Safely get summary and transcript from multiple possible locations
             const summary = message?.analysis?.summary || message?.summary || 'No summary available.';
             const transcript = message?.artifact?.transcript || message?.transcript || '';
-
             const analysis = await analyzeCallSummary(summary, transcript);
             const newCallRecord = {
               date: new Date().toISOString(),
@@ -121,7 +125,6 @@ app.post('/api/handler', async (req, res) => {
 
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
-  // FIX #2: Using the most stable model name
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   const prompt = `
     Analyze the following phone call summary and transcript for "Justauto Solution Pvt. Ltd.".
@@ -158,7 +161,6 @@ async function analyzeCallSummary(summary, transcript) {
 }
 
 function extractCallerInfo(transcript) {
-    // FIX #3: Handle cases where the transcript might be empty or null
     if (!transcript) {
         return { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
     }
