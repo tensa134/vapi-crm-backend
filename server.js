@@ -73,7 +73,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v3.0 (Final Error Logging) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v3.1 (Final Typo Fix) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -143,7 +143,8 @@ async function analyzeCallSummary(summary, transcript) {
   `;
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: "application.json" }
+    // --- FINAL FIX: Corrected typo from "application.json" to "application/json" ---
+    generationConfig: { responseMimeType: "application/json" }
   };
   try {
     const response = await fetch(url, {
@@ -151,12 +152,11 @@ async function analyzeCallSummary(summary, transcript) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (!response.ok) throw new Error(`API request failed with status ${response.status}`);
+    if (!response.ok) throw new Error(`API request failed with status ${response.status} and body: ${await response.text()}`);
     const data = await response.json();
     return JSON.parse(data.candidates[0].content.parts[0].text);
   } catch (error) {
     console.error("Gemini analysis error:", error);
-    // --- FINAL FIX: Return the actual error message ---
     return {
         callStatus: 'Connected-IB',
         leadStatus: 'Uncertain',
