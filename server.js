@@ -73,7 +73,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v3.2 (Final Model Fix) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v3.4 (Final Model From List) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -130,8 +130,8 @@ app.post('/api/handler', async (req, res) => {
 
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
-  // --- FINAL FIX: Switched to the universally available gemini-pro model ---
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+  // --- FINAL FIX: Using the exact model name confirmed from your API key ---
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const prompt = `
     Analyze the following phone call summary and transcript for "Justauto Solution Pvt. Ltd.".
     Your response MUST be a valid JSON object with ONLY the following keys. Adhere strictly to the provided values.
@@ -142,10 +142,9 @@ async function analyzeCallSummary(summary, transcript) {
     Summary: "${summary}"
     Transcript: "${transcript}"
   `;
-  // Note: gemini-pro does not support JSON mode directly in the 'generateContent' API this way.
-  // The prompt must be strong enough to ensure JSON output. The catch block handles failures.
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { responseMimeType: "application/json" }
   };
   try {
     const response = await fetch(url, {
@@ -154,10 +153,11 @@ async function analyzeCallSummary(summary, transcript) {
       body: JSON.stringify(payload)
     });
     if (!response.ok) throw new Error(`API request failed with status ${response.status} and body: ${await response.text()}`);
+    
     const data = await response.json();
-    // Find the JSON part of the response, as gemini-pro might add backticks
-    const jsonString = data.candidates[0].content.parts[0].text.match(/```json\n([\s\S]*?)\n```/)[1];
-    return JSON.parse(jsonString);
+    console.log("--- Gemini Analysis SUCCEEDED ---");
+    return JSON.parse(data.candidates[0].content.parts[0].text);
+
   } catch (error) {
     console.error("Gemini analysis error:", error);
     return {
@@ -178,7 +178,7 @@ function extractCallerInfo(transcript) {
     const userTypeMatch = transcript.match(userTypeRegex);
     if (userTypeMatch) info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
     const nameRegex = /my name is ([\w\s]+?)(?=\.|\s|$|,|and I'm|and I am)/i;
-    const nameMatch = transcript.match(nameMatch);
+    const nameMatch = transcript.match(nameRegex);
     if (nameMatch) info.name = nameMatch[1].trim();
     const courseRegex = /interested in the ([\w\s+]+?)\s*course/i;
     const courseMatch = transcript.match(courseRegex);
