@@ -10,7 +10,7 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-// --- NEW FUNCTION TO PARSE CALLER ID ---
+// --- FUNCTION TO PARSE CALLER ID (SIP FIX) ---
 function getPhoneNumberFromCall(call) {
     if (!call?.customer?.number) {
         return null;
@@ -60,7 +60,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.2 (with SIP fix) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v2.3 (Final Export Fix) ---");
         const { summary, transcript } = message;
         const callerPhoneNumber = getPhoneNumberFromCall(message.call); // Use the new parser
 
@@ -71,15 +71,36 @@ app.post('/api/handler', async (req, res) => {
 
         try {
             const analysis = await analyzeCallSummary(summary, transcript);
-            const newCallRecord = { /* ... same as before ... */ };
+            const newCallRecord = {
+              date: new Date().toISOString(),
+              summary,
+              callStatus: analysis.callStatus || 'Connected-IB',
+              leadStatus: analysis.leadStatus || 'Uncertain',
+              followupDate: analysis.followupDate || 'N/A',
+              remark: analysis.remark || 'No remark.',
+              transcript,
+            };
 
             const callersRef = db.collection('callers');
             const snapshot = await callersRef.where('phoneNumber', '==', callerPhoneNumber).limit(1).get();
 
             if (snapshot.empty) {
-                // ... same logic to create new record ...
+                const callerInfo = extractCallerInfo(transcript);
+                await callersRef.add({
+                    phoneNumber: callerPhoneNumber,
+                    name: callerInfo.name,
+                    course: callerInfo.course,
+                    city: callerInfo.city,
+                    state: callerInfo.state,
+                    userType: callerInfo.userType,
+                    createdAt: new Date().toISOString(),
+                    callHistory: [newCallRecord]
+                });
             } else {
-                // ... same logic to update existing record ...
+                const callerDoc = snapshot.docs[0];
+                const existingData = callerDoc.data();
+                const updatedHistory = [...existingData.callHistory, newCallRecord];
+                await callerDoc.ref.update({ callHistory: updatedHistory });
             }
             return res.status(200).send();
         } catch (error) {
@@ -91,8 +112,6 @@ app.post('/api/handler', async (req, res) => {
     return res.status(200).send();
 });
 
-// The analyzeCallSummary and extractCallerInfo functions remain exactly the same.
-// Just ensure they are present below this point.
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
@@ -110,7 +129,6 @@ async function analyzeCallSummary(summary, transcript) {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: "application/json" }
   };
-
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -132,16 +150,10 @@ async function analyzeCallSummary(summary, transcript) {
 }
 
 function extractCallerInfo(transcript) {
-    const info = {
-        name: 'Unknown',
-        course: 'Unknown',
-        city: 'Unknown',
-        state: 'Unknown',
-        userType: 'Unknown'
-    };
+    const info = { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
     const userTypeRegex = /(student|guardian|employee|garage owner|unemployed|other)/i;
     const userTypeMatch = transcript.match(userTypeRegex);
-if (userTypeMatch) info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
+    if (userTypeMatch) info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
     const nameRegex = /my name is ([\w\s]+?)(?=\.|\s|$|,|and I'm|and I am)/i;
     const nameMatch = transcript.match(nameRegex);
     if (nameMatch) info.name = nameMatch[1].trim();
@@ -154,9 +166,11 @@ if (userTypeMatch) info.userType = userTypeMatch[0].charAt(0).toUpperCase() + us
         info.city = cityStateMatch[1].trim();
         info.state = cityStateMatch[2].trim();
     } else {
-        const cityRegex = /(?:from|in)\s([\w\s]+)/i; 
+        const cityRegex = /(?:from|in)\s([\w\s]+)/i;
         const cityMatch = transcript.match(cityRegex);
         if (cityMatch) info.city = cityMatch[1].trim().replace(/,$/, '');
     }
     return info;
 }
+
+module.exports = app;
