@@ -73,7 +73,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v3.4 (Final Model From List) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v3.5 (Final Extraction Fix) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -130,7 +130,6 @@ app.post('/api/handler', async (req, res) => {
 
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
-  // --- FINAL FIX: Using the exact model name confirmed from your API key ---
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const prompt = `
     Analyze the following phone call summary and transcript for "Justauto Solution Pvt. Ltd.".
@@ -169,31 +168,53 @@ async function analyzeCallSummary(summary, transcript) {
   }
 }
 
+// --- FINAL, ROBUST VERSION of extractCallerInfo ---
 function extractCallerInfo(transcript) {
     if (!transcript) {
         return { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
     }
+
     const info = { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
-    const userTypeRegex = /(student|guardian|employee|garage owner|unemployed|other)/i;
-    const userTypeMatch = transcript.match(userTypeRegex);
-    if (userTypeMatch) info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
-    const nameRegex = /my name is ([\w\s]+?)(?=\.|\s|$|,|and I'm|and I am)/i;
-    const nameMatch = transcript.match(nameRegex);
-    if (nameMatch) info.name = nameMatch[1].trim();
+
+    // Split transcript by speaker for more accurate matching
+    const userLines = transcript.split('\n').filter(line => line.startsWith('User:')).join('\n');
+
+    // 1. Extract User Type (more robust)
+    const userTypeRegex = /i am a (student|guardian|employee|garage owner|unemployed|other)|user: (student|guardian|employee|garage owner|unemployed|other)/i;
+    const userTypeMatch = userLines.match(userTypeRegex);
+    if (userTypeMatch) {
+        info.userType = (userTypeMatch[1] || userTypeMatch[2]).charAt(0).toUpperCase() + (userTypeMatch[1] || userTypeMatch[2]).slice(1);
+    }
+
+    // 2. Extract Name (more robust)
+    const nameRegex = /my name is ([\w\s]+?)(?=[.,]|\s*Um|\s*I'm|$)/i;
+    const nameMatch = userLines.match(nameRegex);
+    if (nameMatch) {
+        info.name = nameMatch[1].trim();
+    }
+
+    // 3. Extract Course (more robust, looks for user's choice)
     const courseRegex = /interested in the ([\w\s+]+?)\s*course/i;
-    const courseMatch = transcript.match(courseRegex);
-    if (courseMatch) info.course = courseMatch[1].trim();
-    const cityStateRegex = /from ([\w\s]+),\s*([\w\s]+)/i;
-    const cityStateMatch = transcript.match(cityStateRegex);
+    const courseMatch = userLines.match(courseRegex);
+    if (courseMatch) {
+        info.course = courseMatch[1].trim();
+    }
+    
+    // 4. Extract Location (looks for "City, Country" pattern or AI prompt)
+    const cityStateRegex = /([\w\s]+),\s*([\w\s]+)/i;
+    const cityStateMatch = userLines.match(cityStateRegex);
     if (cityStateMatch) {
         info.city = cityStateMatch[1].trim();
         info.state = cityStateMatch[2].trim();
     } else {
-        const cityRegex = /(?:from|in)\s([\w\s]+)/i;
-        const cityMatch = transcript.match(cityRegex);
-        if (cityMatch) info.city = cityMatch[1].trim().replace(/,$/, '');
+        // Fallback for just a city name mentioned by user
+        const cityRegex = /user: ([\w\s]+)/i; // A simple capture of a location name
+        const cityMatch = userLines.match(/located in ([\w\s]+)/i); // Look for phrases like "located in Nairobi"
+        if(cityMatch) info.city = cityMatch[1].trim();
     }
+
     return info;
 }
+
 
 module.exports = app;
