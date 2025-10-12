@@ -10,11 +10,16 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-function getPhoneNumberFromCall(call) {
-    if (!call?.customer?.number) {
+// --- FINAL, CORRECTED PARSING FUNCTION ---
+function getPhoneNumberFromMessage(message) {
+    // The end-of-call-report has the number in a different place.
+    const sipUri = message?.customer?.sipUri || message?.call?.customer?.number || message?.call?.customer?.sipUri;
+
+    if (!sipUri) {
         return null;
     }
-    let number = call.customer.number;
+
+    let number = sipUri;
     if (number.startsWith('sip:')) {
         const atIndex = number.indexOf('@');
         if (atIndex !== -1) {
@@ -27,8 +32,8 @@ function getPhoneNumberFromCall(call) {
 app.post('/api/handler', async (req, res) => {
     const { message } = req.body;
 
-    if (message.type === 'tool-call' && message.toolCall.name === 'databaseCheck') {
-        const phoneNumber = getPhoneNumberFromCall(message.call);
+    if (message.type === 'tool-call' && message.toolCall.name === 'databasecheck') {
+        const phoneNumber = getPhoneNumberFromMessage(message); // Use the new universal parser
         if (!phoneNumber) {
              console.warn('Database check tool call with no phone number. Treating as new caller.');
              return res.status(200).json({ result: 'New caller' });
@@ -58,12 +63,8 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        // --- DEBUGGING STEP: PRINT THE ENTIRE MESSAGE OBJECT ---
-        console.log("--- START OF END-OF-CALL-REPORT OBJECT ---");
-        console.log(JSON.stringify(message, null, 2));
-        console.log("--- END OF END-OF-CALL-REPORT OBJECT ---");
-
-        const callerPhoneNumber = getPhoneNumberFromCall(message.call);
+        console.log("--- RUNNING LATEST SERVER CODE v2.4 (FINAL FIX) ---");
+        const callerPhoneNumber = getPhoneNumberFromMessage(message); // Use the new universal parser
 
         if (!callerPhoneNumber) {
             console.warn('End-of-call report received with no parsable phone number. Skipping.');
@@ -71,7 +72,7 @@ app.post('/api/handler', async (req, res) => {
         }
 
         try {
-            const { summary, transcript } = message;
+            const { summary, transcript } = message.analysis; // Data is inside the analysis object
             const analysis = await analyzeCallSummary(summary, transcript);
             const newCallRecord = {
               date: new Date().toISOString(),
@@ -98,11 +99,13 @@ app.post('/api/handler', async (req, res) => {
                     createdAt: new Date().toISOString(),
                     callHistory: [newCallRecord]
                 });
+                console.log(`Successfully created new record for ${callerPhoneNumber}.`);
             } else {
                 const callerDoc = snapshot.docs[0];
                 const existingData = callerDoc.data();
                 const updatedHistory = [...existingData.callHistory, newCallRecord];
                 await callerDoc.ref.update({ callHistory: updatedHistory });
+                console.log(`Successfully updated record for ${callerPhoneNumber}.`);
             }
             return res.status(200).send();
         } catch (error) {
