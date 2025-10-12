@@ -73,7 +73,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v3.5 (Final Extraction Fix) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v3.6 (Final Extraction Logic) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -115,7 +115,14 @@ app.post('/api/handler', async (req, res) => {
                 const callerDoc = snapshot.docs[0];
                 const existingData = callerDoc.data();
                 const updatedHistory = [...(existingData.callHistory || []), newCallRecord];
-                await callerDoc.ref.update({ callHistory: updatedHistory });
+                // Also update missing info on the main document
+                const updatedDetails = {
+                    name: existingData.name === 'Unknown' ? extractCallerInfo(transcript).name : existingData.name,
+                    userType: existingData.userType === 'Unknown' ? extractCallerInfo(transcript).userType : existingData.userType,
+                    city: existingData.city === 'Unknown' ? extractCallerInfo(transcript).city : existingData.city,
+                    state: existingData.state === 'Unknown' ? extractCallerInfo(transcript).state : existingData.state,
+                };
+                await callerDoc.ref.update({ ...updatedDetails, callHistory: updatedHistory });
                 console.log(`Successfully updated record for ${callerPhoneNumber}.`);
             }
             return res.status(200).send();
@@ -176,45 +183,35 @@ function extractCallerInfo(transcript) {
 
     const info = { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
 
-    // Split transcript by speaker for more accurate matching
+    // Filter for only lines spoken by the user to avoid confusion
     const userLines = transcript.split('\n').filter(line => line.startsWith('User:')).join('\n');
 
-    // 1. Extract User Type (more robust)
-    const userTypeRegex = /i am a (student|guardian|employee|garage owner|unemployed|other)|user: (student|guardian|employee|garage owner|unemployed|other)/i;
-    const userTypeMatch = userLines.match(userTypeRegex);
+    // 1. Extract User Type (handles "A student.")
+    const userTypeMatch = userLines.match(/\b(student|guardian|employee|garage owner|unemployed|other)\b/i);
     if (userTypeMatch) {
-        info.userType = (userTypeMatch[1] || userTypeMatch[2]).charAt(0).toUpperCase() + (userTypeMatch[1] || userTypeMatch[2]).slice(1);
+        info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
     }
 
-    // 2. Extract Name (more robust)
-    const nameRegex = /my name is ([\w\s]+?)(?=[.,]|\s*Um|\s*I'm|$)/i;
-    const nameMatch = userLines.match(nameRegex);
+    // 2. Extract Name (handles "My full name is...")
+    const nameMatch = userLines.match(/(?:my full name is|my name is)\s+([\w\s]+?)(?=\.|$)/i);
     if (nameMatch) {
         info.name = nameMatch[1].trim();
     }
 
-    // 3. Extract Course (more robust, looks for user's choice)
-    const courseRegex = /interested in the ([\w\s+]+?)\s*course/i;
-    const courseMatch = userLines.match(courseRegex);
+    // 3. Extract Course
+    const courseMatch = userLines.match(/interested in the ([\w\s+]+?)\s*course/i);
     if (courseMatch) {
         info.course = courseMatch[1].trim();
     }
     
-    // 4. Extract Location (looks for "City, Country" pattern or AI prompt)
-    const cityStateRegex = /([\w\s]+),\s*([\w\s]+)/i;
-    const cityStateMatch = userLines.match(cityStateRegex);
-    if (cityStateMatch) {
-        info.city = cityStateMatch[1].trim();
-        info.state = cityStateMatch[2].trim();
-    } else {
-        // Fallback for just a city name mentioned by user
-        const cityRegex = /user: ([\w\s]+)/i; // A simple capture of a location name
-        const cityMatch = userLines.match(/located in ([\w\s]+)/i); // Look for phrases like "located in Nairobi"
-        if(cityMatch) info.city = cityMatch[1].trim();
+    // 4. Extract Location (handles "I live in Nairobi, Kenya.")
+    const locationMatch = userLines.match(/(?:live in|in|from)\s+([\w\s]+?),\s*([\w\s]+?)(?=\.|$)/i);
+    if (locationMatch) {
+        info.city = locationMatch[1].trim();
+        info.state = locationMatch[2].trim();
     }
 
     return info;
 }
-
 
 module.exports = app;
