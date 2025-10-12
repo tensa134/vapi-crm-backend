@@ -3,9 +3,8 @@ const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const fetch = require('node-fetch');
 
-// --- FINAL FIX: Use express.text() to read the raw body, bypassing content-type issues ---
 const app = express();
-app.use(express.text({ type: '*/*' })); // This forces Express to read the body as a raw string
+app.use(express.text({ type: '*/*' }));
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
@@ -25,11 +24,10 @@ function getPhoneNumberFromMessage(message) {
 app.post('/api/handler', async (req, res) => {
     let parsedBody;
     try {
-        // Since we are using express.text(), req.body is now a string. We MUST parse it.
         if (typeof req.body === 'string' && req.body.length > 0) {
             parsedBody = JSON.parse(req.body);
         } else {
-             console.warn("Received an empty request body. Skipping.");
+             console.warn("Received empty or non-string body. Skipping.");
              return res.status(200).send();
         }
     } catch (e) {
@@ -37,7 +35,6 @@ app.post('/api/handler', async (req, res) => {
         return res.status(400).send('Invalid JSON');
     }
     
-    // Find the message object, whether it's nested or not
     const message = parsedBody.message || parsedBody;
 
     if (!message || !message.type) {
@@ -76,7 +73,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.9 (Final Raw Body Parse) ---");
+        console.log("--- RUNNING LATEST SERVER CODE v3.0 (Final Error Logging) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -91,10 +88,10 @@ app.post('/api/handler', async (req, res) => {
             const newCallRecord = {
               date: new Date().toISOString(),
               summary,
-              callStatus: analysis.callStatus || 'Connected-IB',
-              leadStatus: analysis.leadStatus || 'Uncertain',
-              followupDate: analysis.followupDate || 'N/A',
-              remark: analysis.remark || 'No remark.',
+              callStatus: analysis.callStatus,
+              leadStatus: analysis.leadStatus,
+              followupDate: analysis.followupDate,
+              remark: analysis.remark,
               transcript,
             };
 
@@ -146,7 +143,7 @@ async function analyzeCallSummary(summary, transcript) {
   `;
   const payload = {
     contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { responseMimeType: "application/json" }
+    generationConfig: { responseMimeType: "application.json" }
   };
   try {
     const response = await fetch(url, {
@@ -159,11 +156,12 @@ async function analyzeCallSummary(summary, transcript) {
     return JSON.parse(data.candidates[0].content.parts[0].text);
   } catch (error) {
     console.error("Gemini analysis error:", error);
+    // --- FINAL FIX: Return the actual error message ---
     return {
         callStatus: 'Connected-IB',
         leadStatus: 'Uncertain',
         followupDate: 'N/A',
-        remark: 'Error during AI analysis.'
+        remark: `Gemini analysis failed: ${error.message}`
     };
   }
 }
