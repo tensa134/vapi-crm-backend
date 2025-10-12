@@ -10,17 +10,15 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 
-// --- FUNCTION TO PARSE CALLER ID (SIP FIX) ---
 function getPhoneNumberFromCall(call) {
     if (!call?.customer?.number) {
         return null;
     }
     let number = call.customer.number;
-    // Check if it's a SIP URI and extract the number part
     if (number.startsWith('sip:')) {
         const atIndex = number.indexOf('@');
         if (atIndex !== -1) {
-            number = number.substring(4, atIndex); // Get the part between "sip:" and "@"
+            number = number.substring(4, atIndex);
         }
     }
     return number;
@@ -30,7 +28,7 @@ app.post('/api/handler', async (req, res) => {
     const { message } = req.body;
 
     if (message.type === 'tool-call' && message.toolCall.name === 'databaseCheck') {
-        const phoneNumber = getPhoneNumberFromCall(message.call); // Use the new parser
+        const phoneNumber = getPhoneNumberFromCall(message.call);
         if (!phoneNumber) {
              console.warn('Database check tool call with no phone number. Treating as new caller.');
              return res.status(200).json({ result: 'New caller' });
@@ -60,9 +58,12 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v2.3 (Final Export Fix) ---");
-        const { summary, transcript } = message;
-        const callerPhoneNumber = getPhoneNumberFromCall(message.call); // Use the new parser
+        // --- DEBUGGING STEP: PRINT THE ENTIRE MESSAGE OBJECT ---
+        console.log("--- START OF END-OF-CALL-REPORT OBJECT ---");
+        console.log(JSON.stringify(message, null, 2));
+        console.log("--- END OF END-OF-CALL-REPORT OBJECT ---");
+
+        const callerPhoneNumber = getPhoneNumberFromCall(message.call);
 
         if (!callerPhoneNumber) {
             console.warn('End-of-call report received with no parsable phone number. Skipping.');
@@ -70,6 +71,7 @@ app.post('/api/handler', async (req, res) => {
         }
 
         try {
+            const { summary, transcript } = message;
             const analysis = await analyzeCallSummary(summary, transcript);
             const newCallRecord = {
               date: new Date().toISOString(),
