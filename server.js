@@ -106,7 +106,7 @@ app.post('/api/handler', async (req, res) => {
             const analysis = await analyzeCallSummary(summary, transcript);
             const callerInfo = extractCallerInfo(transcript);
 
-            // Construct the extra_param string from sanitized values
+            // Construct the extra_param string from sanitized values with '$' separator
             const extraParamString = [
                 sanitizeValue(callerInfo.userType),
                 sanitizeValue(callerInfo.course),
@@ -115,7 +115,7 @@ app.post('/api/handler', async (req, res) => {
                 'Incoming',
                 sanitizeValue(analysis['Lead Status']),
                 sanitizeValue(analysis.remark)
-            ].join(',');
+            ].join('$');
 
             // --- CREATE THE SANITIZED DATA OBJECT ---
             const fullCrmData = {
