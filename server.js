@@ -2,7 +2,8 @@ const express = require('express');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const fetch = require('node-fetch');
-const { FormData } = require('form-data'); // We need this to build form data
+// --- FINAL FIX: Corrected the import statement for form-data ---
+const FormData = require('form-data');
 
 const app = express();
 app.use(express.text({ type: '*/*' }));
@@ -22,7 +23,6 @@ function getPhoneNumberFromMessage(message) {
     return number;
 }
 
-// --- UPDATED to send as multipart/form-data ---
 async function sendToExternalCRM(data) {
     const url = 'https://indiavoice.rpdigitalphone.com/api_v2/savecontact_v2';
     const authcode = process.env.EXTERNAL_CRM_AUTHCODE;
@@ -32,10 +32,8 @@ async function sendToExternalCRM(data) {
         return;
     }
 
-    // Create a FormData object to build the multipart payload
     const formData = new FormData();
     
-    // Append all the required fields as form data
     formData.append('authcode', authcode);
     formData.append('contact_num', data.contact_num);
     formData.append('contact_name', data.contact_name);
@@ -45,13 +43,11 @@ async function sendToExternalCRM(data) {
     formData.append('contact_followupdate', data.contact_followupdate);
     formData.append('extra_param', data.extra_param);
 
-
     try {
         console.log('Sending data to external CRM as form-data...');
         const response = await fetch(url, {
             method: 'POST',
-            body: formData // Use the formData object as the body
-            // No 'Content-Type' header is needed; fetch sets it automatically for FormData
+            body: formData
         });
 
         if (!response.ok) {
@@ -110,7 +106,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE with Form-Data POST ---");
+        console.log("--- RUNNING LATEST SERVER CODE v3.8 (Final Import Fix) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -123,15 +119,14 @@ app.post('/api/handler', async (req, res) => {
             const analysis = await analyzeCallSummary(summary, transcript);
             const callerInfo = extractCallerInfo(transcript);
 
-            // --- Construct the extra_param string ---
             const extraParamString = [
                 callerInfo.userType,
                 callerInfo.course,
                 callerInfo.city,
                 callerInfo.state,
-                'Incoming', // Hardcoded as per the curl example
+                'Incoming',
                 analysis['Lead Status'],
-                analysis.remark // Using the remark from Gemini as the summary
+                analysis.remark
             ].join(',');
 
             const fullCrmData = {
@@ -146,7 +141,7 @@ app.post('/api/handler', async (req, res) => {
                 'Call Status': analysis['Call Status'],
                 'Lead Status': analysis['Lead Status'],
                 'lastUpdatedAt': new Date().toISOString(),
-                'extra_param': extraParamString // Add the new field
+                'extra_param': extraParamString
             };
             
             const callersRef = db.collection('callers');
@@ -247,4 +242,3 @@ function extractCallerInfo(transcript) {
 }
 
 module.exports = app;
-
