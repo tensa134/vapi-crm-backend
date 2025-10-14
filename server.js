@@ -21,48 +21,87 @@ function getPhoneNumberFromMessage(message) {
     return number;
 }
 
+// Updated to map to the new external CRM field names
+async function sendToExternalCRM(data) {
+    const url = 'https://indiavoice.rpdigitalphone.com/api_v2/savecontact_v2';
+    const authcode = process.env.EXTERNAL_CRM_AUTHCODE;
+
+    if (!authcode) {
+        console.error('EXTERNAL_CRM_AUTHCODE is not set in environment variables. Skipping send.');
+        return;
+    }
+
+    // Map our data to the new expected format of the external CRM
+    const payload = {
+        authcode: authcode,
+        contact_num: data.contact_num,
+        contact_name: data.contact_name,
+        contact_status: data.contact_status,
+        contact_followuptime: data.contact_followuptime,
+        contact_followupdate: data.contact_followupdate,
+        user_type: data['User Type'], // APIs often use snake_case
+        city: data.city,
+        state: data.state,
+        call_status: data['Call Status'],
+        lead_status: data['Lead Status'],
+    };
+
+    try {
+        console.log('Sending data to external CRM with new format...');
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            throw new Error(`External CRM API request failed with status ${response.status} and body: ${await response.text()}`);
+        }
+
+        const responseData = await response.json();
+        console.log('Successfully sent data to external CRM. Response:', responseData);
+    } catch (error)
+    {
+        console.error('Error sending data to external CRM:', error);
+    }
+}
+
+
 app.post('/api/handler', async (req, res) => {
     let parsedBody;
     try {
         if (typeof req.body === 'string' && req.body.length > 0) {
             parsedBody = JSON.parse(req.body);
         } else {
-             console.warn("Received empty or non-string body. Skipping.");
              return res.status(200).send();
         }
     } catch (e) {
-        console.warn("Received a request with a non-JSON body. Body:", req.body);
         return res.status(400).send('Invalid JSON');
     }
     
     const message = parsedBody.message || parsedBody;
 
     if (!message || !message.type) {
-        console.warn("Could not find a valid message object with a 'type' property after parsing.", { parsedBody });
         return res.status(200).send();
     }
 
     if (message.type === 'tool-call' && message.toolCall.name === 'databasecheck') {
         const phoneNumber = getPhoneNumberFromMessage(message);
         if (!phoneNumber) {
-             console.warn('Database check tool call with no phone number. Treating as new caller.');
              return res.status(200).json({ result: 'New caller' });
         }
-        console.log(`Tool call received: databaseCheck for ${phoneNumber}`);
         try {
+            // Query using the new field name 'contact_num'
             const callersRef = db.collection('callers');
-            const snapshot = await callersRef.where('phoneNumber', '==', phoneNumber).limit(1).get();
+            const snapshot = await callersRef.where('contact_num', '==', phoneNumber).limit(1).get();
             if (snapshot.empty) {
-                console.log(`New caller. Returning status.`);
                 return res.status(200).json({ result: 'New caller' });
             } else {
-                console.log(`Existing caller. Returning data.`);
                 const callerData = snapshot.docs[0].data();
-                const lastCall = callerData.callHistory[callerData.callHistory.length - 1] || {};
                 const resultPayload = {
                     status: 'Existing caller',
-                    name: callerData.name || 'Unknown',
-                    lastCallSummary: lastCall.summary || 'No previous summary available.'
+                    name: callerData.contact_name || 'Unknown',
+                    lastCallSummary: 'Previous call on record.'
                 };
                 return res.status(200).json({ result: JSON.stringify(resultPayload) });
             }
@@ -73,11 +112,10 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE v3.6 (Final Extraction Logic) ---");
+        console.log("--- RUNNING LATEST SERVER CODE with New Data Structure ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
-            console.warn('End-of-call report received with no parsable phone number. Skipping.');
             return res.status(200).send();
         }
 
@@ -85,46 +123,44 @@ app.post('/api/handler', async (req, res) => {
             const summary = message?.analysis?.summary || message?.summary || 'No summary available.';
             const transcript = message?.artifact?.transcript || message?.transcript || '';
             const analysis = await analyzeCallSummary(summary, transcript);
-            const newCallRecord = {
-              date: new Date().toISOString(),
-              summary,
-              callStatus: analysis.callStatus,
-              leadStatus: analysis.leadStatus,
-              followupDate: analysis.followupDate,
-              remark: analysis.remark,
-              transcript,
-            };
+            const callerInfo = extractCallerInfo(transcript);
 
+            // --- CONSTRUCT THE NEW FLAT DATA OBJECT ---
+            const fullCrmData = {
+                'contact_num': callerPhoneNumber,
+                'contact_name': callerInfo.name,
+                'contact_status': analysis.contact_status,
+                'contact_followuptime': analysis.contact_followuptime,
+                'contact_followupdate': analysis.contact_followupdate,
+                'User Type': callerInfo.userType,
+                'city': callerInfo.city,
+                'state': callerInfo.state,
+                'Call Status': analysis['Call Status'],
+                'Lead Status': analysis['Lead Status'],
+                // We'll also add createdAt and a lastUpdatedAt timestamp
+                'lastUpdatedAt': new Date().toISOString()
+            };
+            
             const callersRef = db.collection('callers');
-            const snapshot = await callersRef.where('phoneNumber', '==', callerPhoneNumber).limit(1).get();
+            const snapshot = await callersRef.where('contact_num', '==', callerPhoneNumber).limit(1).get();
 
             if (snapshot.empty) {
-                const callerInfo = extractCallerInfo(transcript);
+                // Create new document with the new structure
                 await callersRef.add({
-                    phoneNumber: callerPhoneNumber,
-                    name: callerInfo.name,
-                    course: callerInfo.course,
-                    city: callerInfo.city,
-                    state: callerInfo.state,
-                    userType: callerInfo.userType,
-                    createdAt: new Date().toISOString(),
-                    callHistory: [newCallRecord]
+                    ...fullCrmData,
+                    createdAt: new Date().toISOString(), // Add createdAt only on the first save
                 });
-                console.log(`Successfully created new record for ${callerPhoneNumber}.`);
+                console.log(`Successfully created new Firebase record for ${callerPhoneNumber}.`);
             } else {
+                // Update existing document with the new structure
                 const callerDoc = snapshot.docs[0];
-                const existingData = callerDoc.data();
-                const updatedHistory = [...(existingData.callHistory || []), newCallRecord];
-                // Also update missing info on the main document
-                const updatedDetails = {
-                    name: existingData.name === 'Unknown' ? extractCallerInfo(transcript).name : existingData.name,
-                    userType: existingData.userType === 'Unknown' ? extractCallerInfo(transcript).userType : existingData.userType,
-                    city: existingData.city === 'Unknown' ? extractCallerInfo(transcript).city : existingData.city,
-                    state: existingData.state === 'Unknown' ? extractCallerInfo(transcript).state : existingData.state,
-                };
-                await callerDoc.ref.update({ ...updatedDetails, callHistory: updatedHistory });
-                console.log(`Successfully updated record for ${callerPhoneNumber}.`);
+                await callerDoc.ref.update(fullCrmData);
+                console.log(`Successfully updated Firebase record for ${callerPhoneNumber}.`);
             }
+            
+            // Call the function to send to the external CRM
+            await sendToExternalCRM(fullCrmData);
+
             return res.status(200).send();
         } catch (error) {
             console.error('End of call processing error:', error);
@@ -141,10 +177,11 @@ async function analyzeCallSummary(summary, transcript) {
   const prompt = `
     Analyze the following phone call summary and transcript for "Justauto Solution Pvt. Ltd.".
     Your response MUST be a valid JSON object with ONLY the following keys. Adhere strictly to the provided values.
-    1. "callStatus": Choose ONE: "Connected-IB", "Connected-OB", "No Answer", "Switched off", "Out of service", "Not reachable", "Call disconnected by customer", "Busy", "Visited Center"
-    2. "leadStatus": Choose ONE: "Interested", "Not Interested", "Interested In Future", "Call Back", "Call Back In Evening", "Call Disconnected By Customer", "Booked", "Enquiry For Tools", "Enquiry For Job", "Enquiry For Franchise", "Busy", "Applicant Not Available"
-    3. "followupDate": Analyze phrases like "call me in 2 days". Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
-    4. "remark": Generate a concise, one-sentence summary under 100 characters.
+    1. "Call Status": Choose ONE: "Connected-IB", "Connected-OB", "No Answer", "Switched off", "Out of service", "Not reachable", "Call disconnected by customer", "Busy", "Visited Center"
+    2. "Lead Status": Choose ONE: "Interested", "Not Interested", "Interested In Future", "Call Back", "Call Back In Evening", "Call Disconnected By Customer", "Booked", "Enquiry For Tools", "Enquiry For Job", "Enquiry For Franchise", "Busy", "Applicant Not Available"
+    3. "contact_status": This should be the SAME as the "Lead Status".
+    4. "contact_followupdate": Analyze phrases like 'call me in 2 days'. Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
+    5. "contact_followuptime": Analyze phrases like 'in the evening', 'around 2 pm', 'tomorrow morning'. Provide a specific time like "2:00 PM" or a general time like "Morning", "Evening". If not mentioned, use "N/A".
     Summary: "${summary}"
     Transcript: "${transcript}"
   `;
@@ -167,50 +204,38 @@ async function analyzeCallSummary(summary, transcript) {
   } catch (error) {
     console.error("Gemini analysis error:", error);
     return {
-        callStatus: 'Connected-IB',
-        leadStatus: 'Uncertain',
-        followupDate: 'N/A',
-        remark: `Gemini analysis failed: ${error.message}`
+        'Call Status': 'Connected-IB',
+        'Lead Status': 'Uncertain',
+        'contact_status': 'Uncertain',
+        'contact_followupdate': 'N/A',
+        'contact_followuptime': 'N/A'
     };
   }
 }
 
-// --- FINAL, ROBUST VERSION of extractCallerInfo ---
 function extractCallerInfo(transcript) {
     if (!transcript) {
         return { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
     }
-
     const info = { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
-
-    // Filter for only lines spoken by the user to avoid confusion
     const userLines = transcript.split('\n').filter(line => line.startsWith('User:')).join('\n');
-
-    // 1. Extract User Type (handles "A student.")
     const userTypeMatch = userLines.match(/\b(student|guardian|employee|garage owner|unemployed|other)\b/i);
     if (userTypeMatch) {
         info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
     }
-
-    // 2. Extract Name (handles "My full name is...")
     const nameMatch = userLines.match(/(?:my full name is|my name is)\s+([\w\s]+?)(?=\.|$)/i);
     if (nameMatch) {
         info.name = nameMatch[1].trim();
     }
-
-    // 3. Extract Course
     const courseMatch = userLines.match(/interested in the ([\w\s+]+?)\s*course/i);
     if (courseMatch) {
         info.course = courseMatch[1].trim();
     }
-    
-    // 4. Extract Location (handles "I live in Nairobi, Kenya.")
     const locationMatch = userLines.match(/(?:live in|in|from)\s+([\w\s]+?),\s*([\w\s]+?)(?=\.|$)/i);
     if (locationMatch) {
         info.city = locationMatch[1].trim();
         info.state = locationMatch[2].trim();
     }
-
     return info;
 }
 
