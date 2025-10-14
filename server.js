@@ -22,7 +22,6 @@ function getPhoneNumberFromMessage(message) {
     return number;
 }
 
-// --- NEW HELPER FUNCTION TO REPLACE "N/A" WITH BLANK STRINGS ---
 function sanitizeValue(value) {
     const nullValues = ["N/A", "Unknown", "Uncertain"];
     if (nullValues.includes(value)) {
@@ -42,7 +41,6 @@ async function sendToExternalCRM(data) {
 
     const formData = new FormData();
     
-    // The data object is already sanitized, so we can append directly
     formData.append('authcode', authcode);
     formData.append('contact_num', data.contact_num);
     formData.append('contact_name', data.contact_name);
@@ -51,6 +49,8 @@ async function sendToExternalCRM(data) {
     formData.append('contact_followuptime', data.contact_followuptime);
     formData.append('contact_followupdate', data.contact_followupdate);
     formData.append('extra_param', data.extra_param);
+    // --- ADDED THE NEW contact_comment FIELD ---
+    formData.append('contact_comment', data.contact_comment);
 
     try {
         console.log('Sending sanitized data to external CRM as form-data...');
@@ -93,7 +93,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE with Sanitization ---");
+        console.log("--- RUNNING LATEST SERVER CODE (Separated contact_comment) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -103,34 +103,34 @@ app.post('/api/handler', async (req, res) => {
         try {
             const summary = message?.analysis?.summary || message?.summary || 'No summary available.';
             const transcript = message?.artifact?.transcript || message?.transcript || '';
+            
             const analysis = await analyzeCallSummary(summary, transcript);
-            const callerInfo = extractCallerInfo(transcript);
 
-            // Construct the extra_param string from sanitized values with '$' separator
+            // --- UPDATED extra_param TO REMOVE THE REMARK ---
             const extraParamString = [
-                sanitizeValue(callerInfo.userType),
-                sanitizeValue(callerInfo.course),
-                sanitizeValue(callerInfo.city),
-                sanitizeValue(callerInfo.state),
+                sanitizeValue(analysis['User Type']),
+                sanitizeValue(analysis.course),
+                sanitizeValue(analysis.city),
+                sanitizeValue(analysis.state),
                 'Incoming',
                 sanitizeValue(analysis['Lead Status']),
-                sanitizeValue(analysis.remark)
             ].join('$');
 
-            // --- CREATE THE SANITIZED DATA OBJECT ---
             const fullCrmData = {
                 'contact_num': sanitizeValue(callerPhoneNumber),
-                'contact_name': sanitizeValue(callerInfo.name),
+                'contact_name': sanitizeValue(analysis.name),
                 'contact_status': sanitizeValue(analysis.contact_status),
                 'contact_followuptime': sanitizeValue(analysis.contact_followuptime),
                 'contact_followupdate': sanitizeValue(analysis.contact_followupdate),
-                'User Type': sanitizeValue(callerInfo.userType),
-                'city': sanitizeValue(callerInfo.city),
-                'state': sanitizeValue(callerInfo.state),
+                'User Type': sanitizeValue(analysis['User Type']),
+                'city': sanitizeValue(analysis.city),
+                'state': sanitizeValue(analysis.state),
                 'Call Status': sanitizeValue(analysis['Call Status']),
                 'Lead Status': sanitizeValue(analysis['Lead Status']),
                 'lastUpdatedAt': new Date().toISOString(),
-                'extra_param': extraParamString
+                'extra_param': extraParamString,
+                // --- ADDED THE NEW contact_comment FIELD ---
+                'contact_comment': sanitizeValue(analysis.remark)
             };
             
             const callersRef = db.collection('callers');
@@ -160,19 +160,26 @@ app.post('/api/handler', async (req, res) => {
     return res.status(200).send();
 });
 
+// --- ENHANCED PROMPT TO EXTRACT ALL DATA ---
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const prompt = `
-    Analyze the following phone call summary and transcript for "Justauto Solution Pvt. Ltd.".
-    Your response MUST be a valid JSON object with ONLY the following keys. Adhere strictly to the provided values.
-    1. "Call Status": Choose ONE: "Connected-IB", "Connected-OB", "No Answer", "Switched off", "Out of service", "Not reachable", "Call disconnected by customer", "Busy", "Visited Center"
-    2. "Lead Status": Choose ONE: "Interested", "Not Interested", "Interested In Future", "Call Back", "Call Back In Evening", "Call Disconnected By Customer", "Booked", "Enquiry For Tools", "Enquiry For Job", "Enquiry For Franchise", "Busy", "Applicant Not Available"
-    3. "contact_status": This should be the SAME as the "Lead Status".
-    4. "contact_followupdate": Analyze phrases like 'call me in 2 days'. Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
-    5. "contact_followuptime": Analyze phrases like 'in the evening', 'around 2 pm', 'tomorrow morning'. Provide a specific time like "2:00 PM" or a general time like "Morning", "Evening". If not mentioned, use "N/A".
-    6. "remark": Generate a concise, one-sentence AI call summary of the conversation.
-    Summary: "${summary}"
+    Analyze the following phone call transcript for "Gestalt". Your task is to extract specific information and provide a status analysis.
+    Your response MUST be a valid JSON object with ONLY the following keys. If a value is not mentioned, use "Unknown".
+
+    1.  "name": The full name of the caller (e.g., "Ashishwan").
+    2.  "User Type": The role of the caller. Choose ONE: "Student", "Guardian", "Employee", "Garage Owner", "Unemployed", "Other".
+    3.  "course": The specific course the user is interested in (e.g., "Car ECM Repair Course").
+    4.  "city": The city the caller mentioned (e.g., "Jasper").
+    5.  "state": The state or country the caller mentioned (e.g., "Punjab").
+    6.  "Call Status": Choose ONE: "Connected-IB", "Connected-OB", "No Answer", "Switched off", "Out of service", "Not reachable", "Call disconnected by customer", "Busy", "Visited Center".
+    7.  "Lead Status": Choose ONE: "Interested", "Not Interested", "Interested In Future", "Call Back", "Call Back In Evening", "Call Disconnected By Customer", "Booked", "Enquiry For Tools", "Enquiry For Job", "Enquiry For Franchise", "Busy", "Applicant Not Available".
+    8.  "contact_status": This should be the SAME as the "Lead Status".
+    9.  "contact_followupdate": Analyze phrases like 'call me in 2 days'. Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
+    10. "contact_followuptime": Analyze phrases like 'in the evening', 'around 2 pm'. Provide a specific time like "2:00 PM" or a general time like "Morning", "Evening". If not mentioned, use "N/A".
+    11. "remark": Generate a concise, one-sentence AI call summary of the conversation.
+
     Transcript: "${transcript}"
   `;
   const payload = {
@@ -193,7 +200,13 @@ async function analyzeCallSummary(summary, transcript) {
 
   } catch (error) {
     console.error("Gemini analysis error:", error);
+    // Return a default structure on failure
     return {
+        'name': 'Unknown',
+        'User Type': 'Unknown',
+        'course': 'Unknown',
+        'city': 'Unknown',
+        'state': 'Unknown',
         'Call Status': 'Connected-IB',
         'Lead Status': 'Uncertain',
         'contact_status': 'Uncertain',
@@ -202,32 +215,6 @@ async function analyzeCallSummary(summary, transcript) {
         'remark': `Gemini analysis failed: ${error.message}`
     };
   }
-}
-
-function extractCallerInfo(transcript) {
-    if (!transcript) {
-        return { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
-    }
-    const info = { name: 'Unknown', course: 'Unknown', city: 'Unknown', state: 'Unknown', userType: 'Unknown' };
-    const userLines = transcript.split('\n').filter(line => line.startsWith('User:')).join('\n');
-    const userTypeMatch = userLines.match(/\b(student|guardian|employee|garage owner|unemployed|other)\b/i);
-    if (userTypeMatch) {
-        info.userType = userTypeMatch[0].charAt(0).toUpperCase() + userTypeMatch[0].slice(1);
-    }
-    const nameMatch = userLines.match(/(?:my full name is|my name is)\s+([\w\s]+?)(?=\.|$)/i);
-    if (nameMatch) {
-        info.name = nameMatch[1].trim();
-    }
-    const courseMatch = userLines.match(/interested in the ([\w\s+]+?)\s*course/i);
-    if (courseMatch) {
-        info.course = courseMatch[1].trim();
-    }
-    const locationMatch = userLines.match(/(?:live in|in|from)\s+([\w\s]+?),\s*([\w\s]+?)(?=\.|$)/i);
-    if (locationMatch) {
-        info.city = locationMatch[1].trim();
-        info.state = locationMatch[2].trim();
-    }
-    return info;
 }
 
 module.exports = app;
