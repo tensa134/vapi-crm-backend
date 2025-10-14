@@ -2,6 +2,7 @@ const express = require('express');
 const { initializeApp, cert } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
 const fetch = require('node-fetch');
+const { FormData } = require('form-data'); // We need this to build form data
 
 const app = express();
 app.use(express.text({ type: '*/*' }));
@@ -21,7 +22,7 @@ function getPhoneNumberFromMessage(message) {
     return number;
 }
 
-// Updated to map to the new external CRM field names
+// --- UPDATED to send as multipart/form-data ---
 async function sendToExternalCRM(data) {
     const url = 'https://indiavoice.rpdigitalphone.com/api_v2/savecontact_v2';
     const authcode = process.env.EXTERNAL_CRM_AUTHCODE;
@@ -31,27 +32,26 @@ async function sendToExternalCRM(data) {
         return;
     }
 
-    // Map our data to the new expected format of the external CRM
-    const payload = {
-        authcode: authcode,
-        contact_num: data.contact_num,
-        contact_name: data.contact_name,
-        contact_status: data.contact_status,
-        contact_followuptime: data.contact_followuptime,
-        contact_followupdate: data.contact_followupdate,
-        user_type: data['User Type'], // APIs often use snake_case
-        city: data.city,
-        state: data.state,
-        call_status: data['Call Status'],
-        lead_status: data['Lead Status'],
-    };
+    // Create a FormData object to build the multipart payload
+    const formData = new FormData();
+    
+    // Append all the required fields as form data
+    formData.append('authcode', authcode);
+    formData.append('contact_num', data.contact_num);
+    formData.append('contact_name', data.contact_name);
+    formData.append('contact_address', `${data.city}, ${data.state}`);
+    formData.append('contact_status', data.contact_status);
+    formData.append('contact_followuptime', data.contact_followuptime);
+    formData.append('contact_followupdate', data.contact_followupdate);
+    formData.append('extra_param', data.extra_param);
+
 
     try {
-        console.log('Sending data to external CRM with new format...');
+        console.log('Sending data to external CRM as form-data...');
         const response = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: formData // Use the formData object as the body
+            // No 'Content-Type' header is needed; fetch sets it automatically for FormData
         });
 
         if (!response.ok) {
@@ -60,8 +60,7 @@ async function sendToExternalCRM(data) {
 
         const responseData = await response.json();
         console.log('Successfully sent data to external CRM. Response:', responseData);
-    } catch (error)
-    {
+    } catch (error) {
         console.error('Error sending data to external CRM:', error);
     }
 }
@@ -91,7 +90,6 @@ app.post('/api/handler', async (req, res) => {
              return res.status(200).json({ result: 'New caller' });
         }
         try {
-            // Query using the new field name 'contact_num'
             const callersRef = db.collection('callers');
             const snapshot = await callersRef.where('contact_num', '==', phoneNumber).limit(1).get();
             if (snapshot.empty) {
@@ -112,7 +110,7 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE with New Data Structure ---");
+        console.log("--- RUNNING LATEST SERVER CODE with Form-Data POST ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -125,7 +123,17 @@ app.post('/api/handler', async (req, res) => {
             const analysis = await analyzeCallSummary(summary, transcript);
             const callerInfo = extractCallerInfo(transcript);
 
-            // --- CONSTRUCT THE NEW FLAT DATA OBJECT ---
+            // --- Construct the extra_param string ---
+            const extraParamString = [
+                callerInfo.userType,
+                callerInfo.course,
+                callerInfo.city,
+                callerInfo.state,
+                'Incoming', // Hardcoded as per the curl example
+                analysis['Lead Status'],
+                analysis.remark // Using the remark from Gemini as the summary
+            ].join(',');
+
             const fullCrmData = {
                 'contact_num': callerPhoneNumber,
                 'contact_name': callerInfo.name,
@@ -137,28 +145,25 @@ app.post('/api/handler', async (req, res) => {
                 'state': callerInfo.state,
                 'Call Status': analysis['Call Status'],
                 'Lead Status': analysis['Lead Status'],
-                // We'll also add createdAt and a lastUpdatedAt timestamp
-                'lastUpdatedAt': new Date().toISOString()
+                'lastUpdatedAt': new Date().toISOString(),
+                'extra_param': extraParamString // Add the new field
             };
             
             const callersRef = db.collection('callers');
             const snapshot = await callersRef.where('contact_num', '==', callerPhoneNumber).limit(1).get();
 
             if (snapshot.empty) {
-                // Create new document with the new structure
                 await callersRef.add({
                     ...fullCrmData,
-                    createdAt: new Date().toISOString(), // Add createdAt only on the first save
+                    createdAt: new Date().toISOString(),
                 });
                 console.log(`Successfully created new Firebase record for ${callerPhoneNumber}.`);
             } else {
-                // Update existing document with the new structure
                 const callerDoc = snapshot.docs[0];
                 await callerDoc.ref.update(fullCrmData);
                 console.log(`Successfully updated Firebase record for ${callerPhoneNumber}.`);
             }
             
-            // Call the function to send to the external CRM
             await sendToExternalCRM(fullCrmData);
 
             return res.status(200).send();
@@ -182,6 +187,7 @@ async function analyzeCallSummary(summary, transcript) {
     3. "contact_status": This should be the SAME as the "Lead Status".
     4. "contact_followupdate": Analyze phrases like 'call me in 2 days'. Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
     5. "contact_followuptime": Analyze phrases like 'in the evening', 'around 2 pm', 'tomorrow morning'. Provide a specific time like "2:00 PM" or a general time like "Morning", "Evening". If not mentioned, use "N/A".
+    6. "remark": Generate a concise, one-sentence AI call summary of the conversation.
     Summary: "${summary}"
     Transcript: "${transcript}"
   `;
@@ -208,7 +214,8 @@ async function analyzeCallSummary(summary, transcript) {
         'Lead Status': 'Uncertain',
         'contact_status': 'Uncertain',
         'contact_followupdate': 'N/A',
-        'contact_followuptime': 'N/A'
+        'contact_followuptime': 'N/A',
+        'remark': `Gemini analysis failed: ${error.message}`
     };
   }
 }
@@ -240,3 +247,4 @@ function extractCallerInfo(transcript) {
 }
 
 module.exports = app;
+
