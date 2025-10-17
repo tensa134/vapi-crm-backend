@@ -5,7 +5,8 @@ const fetch = require('node-fetch');
 const FormData = require('form-data');
 
 const app = express();
-app.use(express.text({ type: '*/*' }));
+// --- FIX: Increased the payload size limit to 5mb ---
+app.use(express.text({ type: '*/*', limit: '5mb' }));
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
 initializeApp({ credential: cert(serviceAccount) });
@@ -86,14 +87,12 @@ app.post('/api/handler', async (req, res) => {
     if (!message || !message.type) {
         return res.status(200).send();
     }
-
-    if (message.type === 'tool-call' && message.toolCall.name === 'databasecheck') {
-        // This logic can be removed if the tool is no longer used in the prompt.
-        // For now, it remains harmless.
-    }
+    
+    // Since the tool-call is removed from the prompt, we can remove this block.
+    // if (message.type === 'tool-call' && message.toolCall.name === 'databasecheck') { ... }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST BILINGUAL SERVER CODE ---");
+        console.log("--- RUNNING LATEST BILINGUAL SERVER CODE (Large Payload) ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -215,3 +214,4 @@ async function analyzeCallSummary(summary, transcript) {
 }
 
 module.exports = app;
+
