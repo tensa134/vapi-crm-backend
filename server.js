@@ -49,7 +49,6 @@ async function sendToExternalCRM(data) {
     formData.append('contact_followuptime', data.contact_followuptime);
     formData.append('contact_followupdate', data.contact_followupdate);
     formData.append('extra_param', data.extra_param);
-    // --- ADDED THE NEW contact_comment FIELD ---
     formData.append('contact_comment', data.contact_comment);
 
     try {
@@ -89,11 +88,12 @@ app.post('/api/handler', async (req, res) => {
     }
 
     if (message.type === 'tool-call' && message.toolCall.name === 'databasecheck') {
-        // ... (tool-call logic is unchanged)
+        // This logic can be removed if the tool is no longer used in the prompt.
+        // For now, it remains harmless.
     }
 
     if (message.type === 'end-of-call-report') {
-        console.log("--- RUNNING LATEST SERVER CODE (Separated contact_comment) ---");
+        console.log("--- RUNNING LATEST BILINGUAL SERVER CODE ---");
         const callerPhoneNumber = getPhoneNumberFromMessage(message);
 
         if (!callerPhoneNumber) {
@@ -106,7 +106,6 @@ app.post('/api/handler', async (req, res) => {
             
             const analysis = await analyzeCallSummary(summary, transcript);
 
-            // --- UPDATED extra_param TO REMOVE THE REMARK ---
             const extraParamString = [
                 sanitizeValue(analysis['User Type']),
                 sanitizeValue(analysis.course),
@@ -129,7 +128,6 @@ app.post('/api/handler', async (req, res) => {
                 'Lead Status': sanitizeValue(analysis['Lead Status']),
                 'lastUpdatedAt': new Date().toISOString(),
                 'extra_param': extraParamString,
-                // --- ADDED THE NEW contact_comment FIELD ---
                 'contact_comment': sanitizeValue(analysis.remark)
             };
             
@@ -160,24 +158,24 @@ app.post('/api/handler', async (req, res) => {
     return res.status(200).send();
 });
 
-// --- ENHANCED PROMPT TO EXTRACT ALL DATA ---
+// --- ENHANCED BILINGUAL PROMPT FOR GEMINI ---
 async function analyzeCallSummary(summary, transcript) {
   const apiKey = process.env.GEMINI_API_KEY;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const prompt = `
-    Analyze the following phone call transcript for "Gestalt". Your task is to extract specific information and provide a status analysis.
-    Your response MUST be a valid JSON object with ONLY the following keys. If a value is not mentioned, use "Unknown".
+    Analyze the following phone call transcript, which can be in English, Hindi, or a mix (Hinglish). Your task is to extract specific information into a JSON format.
+    Your response MUST be a valid JSON object with ONLY the following English keys. If a value is not mentioned, use "Unknown".
 
-    1.  "name": The full name of the caller (e.g., "Ashishwan").
-    2.  "User Type": The role of the caller. Choose ONE: "Student", "Guardian", "Employee", "Garage Owner", "Unemployed", "Other".
-    3.  "course": The specific course the user is interested in (e.g., "Car ECM Repair Course").
-    4.  "city": The city the caller mentioned (e.g., "Jasper").
-    5.  "state": The state or country the caller mentioned (e.g., "Punjab").
+    1.  "name": The full name of the caller (e.g., "Ashishwan"). In Hindi, this is "नाम".
+    2.  "User Type": The role of the caller. Choose ONE: "Student", "Guardian", "Employee", "Garage Owner", "Unemployed", "Other". In Hindi, this is "उपयोगकर्ता प्रकार".
+    3.  "course": The specific course the user is interested in. In Hindi, this is "कोर्स".
+    4.  "city": The city the caller mentioned (e.g., "Delhi" or "दिल्ली"). In Hindi, this is "शहर".
+    5.  "state": The state or country the caller mentioned (e.g., "Punjab" or "पंजाब"). In Hindi, this is "राज्य".
     6.  "Call Status": Choose ONE: "Connected-IB", "Connected-OB", "No Answer", "Switched off", "Out of service", "Not reachable", "Call disconnected by customer", "Busy", "Visited Center".
     7.  "Lead Status": Choose ONE: "Interested", "Not Interested", "Interested In Future", "Call Back", "Call Back In Evening", "Call Disconnected By Customer", "Booked", "Enquiry For Tools", "Enquiry For Job", "Enquiry For Franchise", "Busy", "Applicant Not Available".
     8.  "contact_status": This should be the SAME as the "Lead Status".
-    9.  "contact_followupdate": Analyze phrases like 'call me in 2 days'. Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
-    10. "contact_followuptime": Analyze phrases like 'in the evening', 'around 2 pm'. Provide a specific time like "2:00 PM" or a general time like "Morning", "Evening". If not mentioned, use "N/A".
+    9.  "contact_followupdate": Analyze phrases like 'call me in 2 days' or 'दो दिन बाद कॉल करना'. Today's date is ${new Date().toISOString().split('T')[0]}. Provide date in "YYYY-MM-DD" format or "N/A".
+    10. "contact_followuptime": Analyze phrases like 'in the evening' or 'शाम को'. Provide a specific time like "2:00 PM" or a general time like "Morning", "Evening". If not mentioned, use "N/A".
     11. "remark": Generate a concise, one-sentence AI call summary of the conversation.
 
     Transcript: "${transcript}"
@@ -200,7 +198,6 @@ async function analyzeCallSummary(summary, transcript) {
 
   } catch (error) {
     console.error("Gemini analysis error:", error);
-    // Return a default structure on failure
     return {
         'name': 'Unknown',
         'User Type': 'Unknown',
